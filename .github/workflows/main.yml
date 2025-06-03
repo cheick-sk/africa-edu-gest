@@ -1,0 +1,18 @@
+# .github/workflows/auto-pr.yml
+name: Auto Pull Request
+on:
+  push:
+    branches: [ develop, feature/* ]
+
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: main
+          head: ${{ github.ref_name }}
+          title: "Auto PR from ${{ github.ref_name }}"
