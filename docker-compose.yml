@@ -1,0 +1,124 @@
+version: '3.8'
+
+services:
+  postgres_db:
+    image: postgres:15-alpine
+    container_name: saas_postgres_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-saas_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-saas_password}
+      POSTGRES_DB: ${POSTGRES_DB:-saas_platform_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-saas_user} -d ${POSTGRES_DB:-saas_platform_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongo_db:
+    image: mongo:6.0
+    container_name: saas_mongo_db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-mongoadmin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-mongopassword}
+      # MONGO_INITDB_DATABASE: ${MONGO_DB_NAME:-saas_platform_mongo} # This creates a user for a specific DB
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongo_data:/data/db
+      # - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro # Optional: for creating users/dbs
+    restart: unless-stopped
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh --quiet --username ${MONGO_ROOT_USER:-mongoadmin} --password ${MONGO_ROOT_PASSWORD:-mongopassword} --authenticationDatabase admin
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: saas_backend_service
+    ports:
+      - "${BACKEND_PORT:-3001}:3001" # Expose backend port (same as in backend/src/main.ts or .env)
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: ${BACKEND_PORT:-3001}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-saas_user}:${POSTGRES_PASSWORD:-saas_password}@postgres_db:5432/${POSTGRES_DB:-saas_platform_db}
+      MONGODB_URI: mongodb://${MONGO_ROOT_USER:-mongoadmin}:${MONGO_ROOT_PASSWORD:-mongopassword}@mongo_db:27017/${MONGO_DB_NAME:-saas_platform_mongo}?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:-YourVerySecretKeyForJWT!ChangeMe!}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-3600s}
+      # Add other backend environment variables here
+    volumes:
+      - ./backend:/usr/src/app # Mount source code for development (optional, for prod build this is not needed)
+      - /usr/src/app/node_modules # Don't mount node_modules from host in dev
+      - /usr/src/app/dist # Don't mount dist from host in dev
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+      mongo_db:
+        condition: service_healthy
+    restart: unless-stopped
+    # For development with hot-reloading using nodemon or similar:
+    # command: npm run start:dev
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: saas_frontend_service
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000" # Expose frontend port
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      # This ensures Next.js can reach the backend service by its Compose name 'backend'
+      # Note: NEXT_PUBLIC_ variables must be set at build time or available through window object for client-side Next.js
+      # For server-side rendering in Next.js (getServerSideProps, API routes in Next),
+      # this runtime variable would work. For client-side fetches, ensure it's handled correctly.
+      # One way is to have an API route in Next.js proxy requests to the backend.
+      # Or ensure NEXT_PUBLIC_API_URL is baked in during build, or fetched from a config endpoint.
+      NEXT_PUBLIC_API_URL: http://backend:${BACKEND_PORT:-3001}/api/v1 # URL for backend, accessible from frontend container
+      # For local development if frontend directly calls backend on host:
+      # NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-3001}/api/v1
+    volumes:
+      - ./frontend:/app # Mount source code for development (optional)
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    restart: unless-stopped
+    # For development with hot-reloading:
+    # command: npm run dev
+
+volumes:
+  postgres_data:
+    driver: local
+  mongo_data:
+    driver: local
+
+# Note for .env file:
+# Create a .env file in the root directory (where docker-compose.yml is)
+# with the following variables (or use defaults):
+#
+# POSTGRES_USER=saas_user
+# POSTGRES_PASSWORD=saas_password
+# POSTGRES_DB=saas_platform_db
+# POSTGRES_PORT=5432
+#
+# MONGO_ROOT_USER=mongoadmin
+# MONGO_ROOT_PASSWORD=mongopassword
+# MONGO_DB_NAME=saas_platform_mongo # This is the DB the backend will use
+# MONGO_PORT=27017
+#
+# BACKEND_PORT=3001
+# FRONTEND_PORT=3000
+#
+# JWT_SECRET=YourVerySecretKeyForJWT!ChangeMe!Please
+# JWT_EXPIRATION=1h
+#
+# NODE_ENV=development
+#
